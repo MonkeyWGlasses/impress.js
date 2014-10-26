@@ -418,6 +418,101 @@
         // used to reset timeout for `impress:stepenter` event
         var stepEnterTimeout = null;
         
+        function aquireTarget(step){
+            // compute target state of the canvas based on given step
+            return {
+                rotate: {
+                    x: -step.rotate.x,
+                    y: -step.rotate.y,
+                    z: -step.rotate.z
+                },
+                translate: {
+                    x: -step.translate.x,
+                    y: -step.translate.y,
+                    z: -step.translate.z
+                },
+                scale: 1 / step.scale
+            };
+        }
+
+        function triggerTransition(data){
+            // Now we alter transforms of `root` and `canvas` to trigger transitions.
+            //
+            // And here is why there are two elements: `root` and `canvas` - they are
+            // being animated separately:
+            // `root` is used for scaling and `canvas` for translate and rotations.
+            // Transitions on them are triggered with different delays (to make
+            // visually nice and 'natural' looking transitions), so we need to know
+            // that both of them are finished.
+            css(root, {
+                // to keep the perspective look similar for different scales
+                // we need to 'scale' the perspective, too
+                transform: perspective( config.perspective / data.targetScale ) + scale( data.targetScale ),
+                transitionDuration: data.duration + "ms",
+                transitionDelay: (data.zoomin ? data.delay : 0) + "ms"
+            });
+            
+            css(canvas, {
+                transform: rotate(data.target.rotate, true) + translate(data.target.translate),
+                transitionDuration: data.duration + "ms",
+                transitionDelay: (data.zoomin ? 0 : data.delay) + "ms"
+            });
+        }
+
+        function removeDelayIfNoMovement(target, delay){
+            // Here is a tricky part...
+            //
+            // If there is no change in scale or no change in rotation and translation, it means there was actually
+            // no delay - because there was no transition on `root` or `canvas` elements.
+            // We want to trigger `impress:stepenter` event in the correct moment, so here we compare the current
+            // and target values to check if delay should be taken into account.
+            //
+            // I know that this `if` statement looks scary, but it's pretty simple when you know what is going on
+            // - it's simply comparing all the values.
+             if ( currentState.scale === target.scale ||
+                (currentState.rotate.x === target.rotate.x && currentState.rotate.y === target.rotate.y &&
+                 currentState.rotate.z === target.rotate.z && currentState.translate.x === target.translate.x &&
+                 currentState.translate.y === target.translate.y && currentState.translate.z === target.translate.z) ) {
+                return 0;
+            }    
+            return delay;       
+        }
+
+        function calcTransitionDetails(el){
+            var step = stepsData["impress-" + el.id];
+            // compute target state of the canvas based on given step
+            var target = aquireTarget(step);
+            
+            // Check if the transition is zooming in or not.
+            //
+            // This information is used to alter the transition style:
+            // when we are zooming in - we start with move and rotate transition
+            // and the scaling is delayed, but when we are zooming out we start
+            // with scaling down and move and rotation are delayed.
+            var zoomin = target.scale >= currentState.scale;
+            
+            var duration = toNumber(duration, config.transitionDuration);
+            var delay = (duration / 2);
+            
+            // if the same step is re-selected, force computing window scaling,
+            // because it is likely to be caused by window resize
+            if (el === activeStep) {
+                windowScale = computeWindowScale(config);
+            }
+            
+            var targetScale = target.scale * windowScale;
+
+            return {
+                "target": target,
+                "targetScale": targetScale,
+                "duration": duration,
+                "zoomin": zoomin,
+                "delay": delay
+            };
+        }
+
+
+
         // `goto` API function that moves to step given with `el` parameter (by index, id or element),
         // with a transition `duration` optionally given as second parameter.
         var goto = function ( el, duration ) {
@@ -437,95 +532,32 @@
             // If you are reading this and know any better way to handle it, I'll be glad to hear about it!
             window.scrollTo(0, 0);
             
-            var step = stepsData["impress-" + el.id];
+            
             
             if ( activeStep ) {
                 activeStep.classList.remove("active");
                 body.classList.remove("impress-on-" + activeStep.id);
             }
+
             el.classList.add("active");
             
             body.classList.add("impress-on-" + el.id);
             
-            // compute target state of the canvas based on given step
-            var target = {
-                rotate: {
-                    x: -step.rotate.x,
-                    y: -step.rotate.y,
-                    z: -step.rotate.z
-                },
-                translate: {
-                    x: -step.translate.x,
-                    y: -step.translate.y,
-                    z: -step.translate.z
-                },
-                scale: 1 / step.scale
-            };
-            
-            // Check if the transition is zooming in or not.
-            //
-            // This information is used to alter the transition style:
-            // when we are zooming in - we start with move and rotate transition
-            // and the scaling is delayed, but when we are zooming out we start
-            // with scaling down and move and rotation are delayed.
-            var zoomin = target.scale >= currentState.scale;
-            
-            duration = toNumber(duration, config.transitionDuration);
-            var delay = (duration / 2);
-            
-            // if the same step is re-selected, force computing window scaling,
-            // because it is likely to be caused by window resize
-            if (el === activeStep) {
-                windowScale = computeWindowScale(config);
-            }
-            
-            var targetScale = target.scale * windowScale;
-            
+           
             // trigger leave of currently active element (if it's not the same step again)
             if (activeStep && activeStep !== el) {
                 onStepLeave(activeStep);
             }
-            
-            // Now we alter transforms of `root` and `canvas` to trigger transitions.
-            //
-            // And here is why there are two elements: `root` and `canvas` - they are
-            // being animated separately:
-            // `root` is used for scaling and `canvas` for translate and rotations.
-            // Transitions on them are triggered with different delays (to make
-            // visually nice and 'natural' looking transitions), so we need to know
-            // that both of them are finished.
-            css(root, {
-                // to keep the perspective look similar for different scales
-                // we need to 'scale' the perspective, too
-                transform: perspective( config.perspective / targetScale ) + scale( targetScale ),
-                transitionDuration: duration + "ms",
-                transitionDelay: (zoomin ? delay : 0) + "ms"
-            });
-            
-            css(canvas, {
-                transform: rotate(target.rotate, true) + translate(target.translate),
-                transitionDuration: duration + "ms",
-                transitionDelay: (zoomin ? 0 : delay) + "ms"
-            });
-            
-            // Here is a tricky part...
-            //
-            // If there is no change in scale or no change in rotation and translation, it means there was actually
-            // no delay - because there was no transition on `root` or `canvas` elements.
-            // We want to trigger `impress:stepenter` event in the correct moment, so here we compare the current
-            // and target values to check if delay should be taken into account.
-            //
-            // I know that this `if` statement looks scary, but it's pretty simple when you know what is going on
-            // - it's simply comparing all the values.
-            if ( currentState.scale === target.scale ||
-                (currentState.rotate.x === target.rotate.x && currentState.rotate.y === target.rotate.y &&
-                 currentState.rotate.z === target.rotate.z && currentState.translate.x === target.translate.x &&
-                 currentState.translate.y === target.translate.y && currentState.translate.z === target.translate.z) ) {
-                delay = 0;
-            }
+
+            var transitionDetails = calcTransitionDetails(el);
+
+            triggerTransition(transitionDetails);
+
+
+            var delay = removeDelayIfNoMovement(transitionDetails.target,transitionDetails.delay);
             
             // store current state
-            currentState = target;
+            currentState = transitionDetails.target;
             activeStep = el;
             
             // And here is where we trigger `impress:stepenter` event.
@@ -558,6 +590,7 @@
         
         // `next` API function goes to next step (in document order)
         var next = function () {
+
             var next = steps.indexOf( activeStep ) + 1;
             next = next < steps.length ? steps[ next ] : steps[ 0 ];
             
